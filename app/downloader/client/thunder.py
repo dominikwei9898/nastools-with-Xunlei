@@ -13,6 +13,8 @@ import bencodepy
 from app.utils import StringUtils
 import json
 import datetime
+import io
+from requests_toolbelt import MultipartEncoder
 
 
 class Thunder(_IDownloadClient):
@@ -106,9 +108,6 @@ class Thunder(_IDownloadClient):
 
             # 合并自定义 headers
             headers = {**default_headers, **kwargs.pop('headers', {})}
-
-            log.info(f"正在发送 {method} 请求到: {url}")
-
             response = session.request(
                 method,
                 url,
@@ -204,7 +203,7 @@ class Thunder(_IDownloadClient):
 
     def get_torrents(self, ids=None, status=None, **kwargs):
         """
-        获取下载器中的种���列表
+        获取下载器中的种列表
         """
         if not self._client:
             return []
@@ -321,8 +320,7 @@ class Thunder(_IDownloadClient):
                     return False
             else:
                 # 验证种子文件
-                try:
-                    # 直接使用bencodepy验证种子文件
+                try:                    # 直接使用bencodepy验证种子文件
                     metadata = bencodepy.decode(content)
                     if not metadata or b'info' not in metadata:
                         log.error("无效的种子文件")
@@ -360,16 +358,28 @@ class Thunder(_IDownloadClient):
                 timeout=60
             )
             
+            log.debug(f"获取资源列表结果: {list_result}")
             if not list_result.get('list', {}).get('resources'):
                 log.error(f"未找到可下载的资源: {list_result}")
                 return False
             
             resource = list_result['list']['resources'][0]
             task_name = kwargs.get('file_name') or resource.get('name')
-            file_size = resource.get('size', 0)
+            
+            # 修改文件大小获取逻辑
+            file_size = 0
+            if resource.get('is_dir') and resource.get('dir', {}).get('resources'):
+                # 如果是目录，累加所有文件的大小
+                for file in resource['dir']['resources']:
+                    file_size += int(file.get('file_size', 0))
+                log.info(f"目录总大小: {file_size} bytes ({len(resource['dir']['resources'])} 个文件)")
+            else:
+                # 单文件直接获取大小
+                file_size = int(resource.get('file_size', 0))
+                log.info(f"单文件大小: {file_size} bytes")
             
             log.info(f"资源名称: {task_name}")
-            log.info(f"文件大小: {file_size} bytes")
+            log.info(f"文件大小: {StringUtils.str_filesize(file_size)}")
             
             # 获取或创建下载目录
             log.info(f"开始处理下载目录: {download_dir}")
@@ -453,7 +463,7 @@ class Thunder(_IDownloadClient):
         下载磁力链接
         """
         try:
-            # 取资源��表
+            # 取资源列表
             url = "/drive/v1/resource/list"
             params = {"device_space": ""}
             body = {"urls": magnet_link}
@@ -524,29 +534,32 @@ class Thunder(_IDownloadClient):
             if not self._device_id:
                 self._device_id = self.get_device_id()
             
-            # 转换为列表
             if isinstance(ids, str):
                 ids = [ids]
             
             log.info(f"删除任务ID: {ids}")
-            # 批量删除所有任务
+            
+            # 使用PATCH方法删除任务
             delete_result = self._make_request(
                 'POST',
-                "/drive/v1/task/delete",
-                params={"device_space": ""},
+                "/method/patch/drive/v1/task",
+                params={"device_space": "", "pan-auth": self._pan_auth},
                 json={
-                    "ids": ids[0],
-                    "delete_file": delete_file,  # 是否同时删除文件
-                    "space": self._device_id
+                    "space": self._device_id,
+                    "type": "user#download-url",
+                    "id": ids[0],
+                    "set_params": {
+                        "spec": "{\"phase\":\"delete\"}"
+                    }
                 }
             )
             
-            if not delete_result or delete_result.get('HttpStatus') != 0:
+            if not delete_result or delete_result.get('error_code', 0) != 0:
                 log.error(f"删除任务失败: {delete_result}")
                 return False
             
             log.info(f"成功删除任务: {ids}")
-            return True
+            return True  # 修改返回值为 True
             
         except Exception as e:
             log.error(f"删除任务异常: {str(e)}")
@@ -563,29 +576,38 @@ class Thunder(_IDownloadClient):
             if not self._get_auth() or not ids:
                 return False
             
+            if not self._device_id:
+                self._device_id = self.get_device_id()
+            
             if isinstance(ids, str):
                 ids = [ids]
             
-            log.info(f"开始任务Id: {ids}")
+            log.info(f"开始任务ID: {ids}")
+            
+            # 使用PATCH方法启动任务
             result = self._make_request(
                 'POST',
-                "/drive/v1/task/start",
-                params={"device_space": ""},
+                "/method/patch/drive/v1/task",
+                params={"device_space": "", "pan-auth": self._pan_auth},
                 json={
-                    "ids": ids[0],
-                    "space": self._device_id
+                    "space": self._device_id,
+                    "type": "user#download-url",
+                    "id": ids[0],  # 使用第一个ID
+                    "set_params": {
+                        "spec": "{\"phase\":\"running\"}"  # 设置运行状态
+                    }
                 }
             )
             
-            if result and result.get('HttpStatus') == 0:
-                log.info(f"成功开始任务: {ids}")
-                return True
+            if result and result.get('error_code', 0) == 0:
+                log.info(f"成功启动任务: {ids}")
+                return {"id": ids[0]}  # 返回字典格式
             
-            log.error(f"开始任务失败: {result}")
+            log.error(f"启动任务失败: {result}")
             return False
             
         except Exception as e:
-            log.error(f"开始任务异常: {str(e)}")
+            log.error(f"启动任务异常: {str(e)}")
             ExceptionUtils.exception_traceback(e)
             return False
 
@@ -593,35 +615,44 @@ class Thunder(_IDownloadClient):
         """
         停止下载
         :param ids: 种子ID列表
-        :return: bool
+        :return: dict
         """
         try:
             if not self._get_auth() or not ids:
                 return False
             
+            if not self._device_id:
+                self._device_id = self.get_device_id()
+            
             if isinstance(ids, str):
                 ids = [ids]
             
-            log.info(f"停止任务ID: {ids}")
+            log.info(f"暂停任务ID: {ids}")
+            
+            # 使用PATCH方法暂停任务
             result = self._make_request(
                 'POST',
-                "/drive/v1/task/stop",
-                params={"device_space": ""},
+                "/method/patch/drive/v1/task",
+                params={"device_space": "", "pan-auth": self._pan_auth},
                 json={
-                    "ids": ids[0],
-                    "space": self._device_id
+                    "space": self._device_id,
+                    "type": "user#download-url",
+                    "id": ids[0],  # 使用第一个ID
+                    "set_params": {
+                        "spec": "{\"phase\":\"pause\"}"  # 设置暂停状态
+                    }
                 }
             )
             
-            if result and result.get('HttpStatus') == 0:
-                log.info(f"成功停止任务: {ids}")
-                return True
+            if result and result.get('error_code', 0) == 0:
+                log.info(f"成功暂停任务: {ids}")
+                return {"id": ids[0]}  # 返回字典格式，包含id字段
             
-            log.error(f"停止任务失败: {result}")
+            log.error(f"暂停任务失败: {result}")
             return False
             
         except Exception as e:
-            log.error(f"停止任务异常: {str(e)}")
+            log.error(f"暂停任务异常: {str(e)}")
             ExceptionUtils.exception_traceback(e)
             return False
 
@@ -797,25 +828,31 @@ class Thunder(_IDownloadClient):
                 # 获取任务参数
                 params = task.get("params", {})
                 phase = task.get("phase")
+                
                 # 计算进度和大小
                 file_size = int(task.get("file_size", 0))
                 progress = float(task.get("progress", 0)) * 100
                 downloaded = int(params.get("checked_size", 0))
-                speed = int(task.get("speed", 0))
-                # 错误状态处理
-                error_message = ""
-                if phase == "PHASE_TYPE_ERROR":
-                    # 优先使用 params 中的 error 信息
-                    error_message = params.get("error", "")
-                    if not error_message:
-                        # 如果 params 中没有 error，则使用 task 的 message
-                        error_message = task.get("message", "下载出错")
-                    # 错误状态下进度显示为0
-                    progress = 0
-                    speed = 0
                 
-                # 转换迅雷状态为通用状态
-                state = self._get_status(phase)
+                # 根据状态设置速度和显示文本
+                speed = 0
+                if phase == "PHASE_TYPE_RUNNING":
+                    # 获取原始速度值(bytes/s)
+                    raw_speed = int(task.get("speed", 0))
+                    # 转换为可读的速度字符串(如 1.2 MB/s)
+                    speed_str = StringUtils.str_filesize(raw_speed) + "/s"
+                    # 设置速度相关字段
+                    speed = speed_str
+                    dlspeed = speed_str  # 下载速度
+                elif phase == "PHASE_TYPE_PAUSED":
+                    speed = "已暂停"
+                    dlspeed = "已暂停"
+                elif phase == "PHASE_TYPE_ERROR":
+                    speed = "下载失败"
+                    dlspeed = "下载失败"
+                else:
+                    speed = "0.0B/s"
+                    dlspeed = "0.0B/s"
                 
                 # 构造显示信息
                 task_info = {
@@ -824,15 +861,14 @@ class Thunder(_IDownloadClient):
                     "name": task.get("file_name"),           
                     "size": file_size,                       
                     "progress": round(progress, 1),          
-                    "state": state,                          
-                    "speed": StringUtils.str_filesize(speed) + "/s",
-                    "dlspeed": speed,
-                    "upspeed": 0,
+                    "state": self._get_status(phase),                          
+                    "speed": speed,  # 显示速度
+                    "dlspeed": dlspeed,  # 下载速度
+                    "upspeed": "0.0B/s",  # 迅雷不支持上传速度显示
                     "downloaded": downloaded,
                     "status": phase,                         
-                    "message": error_message or task.get("message", ""),  # 优先显示错误信息
                     "save_path": params.get("real_path", ""),
-                    "noprogress": phase == "PHASE_TYPE_ERROR",  # 错误状态不显示进度条
+                    "noprogress": phase in ["PHASE_TYPE_ERROR", "PHASE_TYPE_PAUSED"],  # 错误或暂停状态不显示进度条
                     "nomenu": False,
                     # 新增字段
                     "created_time": task.get("created_time"),  # 创建时间
@@ -901,52 +937,52 @@ class Thunder(_IDownloadClient):
     def _torrent2magnet(self, torrent_content):
         """
         种子文件转磁力链接
-        :param torrent_content: 种子文件内容
-        :return: 磁力链接
+        :param torrent_content: 种子文件内容(bytes)
+        :return: 磁力链接或None
         """
         try:
-            # 1. 解码种子文件
-            metadata = bencodepy.decode(torrent_content)
-            info = metadata[b'info']
+            log.info("开始转换种子文件为磁力链接...")
             
-            # 2. 计算 info_hash
-            hash_contents = bencodepy.encode(info)
-            hash_value = hashlib.sha1(hash_contents).hexdigest()
+            # 确保有认证信息
+            if not self._get_auth():
+                log.error("获取认证失败")
+                return None
             
-            # 3. 构建基础磁力链接
-            magnet = f"magnet:?xt=urn:btih:{hash_value}"
+            # 准备multipart/form-data格式的数据
+            torrent_file = io.BytesIO(torrent_content)
             
-            # 4. 添加 Tracker
-            trackers = []
+            # 构造multipart表单数据
+            m = MultipartEncoder(
+                fields={
+                    'file': ('file.torrent', torrent_file, 'multipart/form-data')
+                }
+            )
+            log.info(f"Content-Type: {m.content_type}")
             
-            # 处理多层级 tracker
-            if b'announce-list' in metadata:
-                for tier in metadata[b'announce-list']:
-                    tracker = tier[0].decode()
-                    if tracker not in trackers:
-                        trackers.append(tracker)
-                    
-            # 处理单个 tracker
-            elif b'announce' in metadata:
-                tracker = metadata[b'announce'].decode()
-                trackers.append(tracker)
-                
-            # 添加 trackers 到磁力链接
-            if trackers:
-                magnet += ''.join([f"&tr={quote(tr)}" for tr in trackers])
-                
-            # 5. 添加显示名称(如果存在)
-            if b'name' in info:
-                name = info[b'name'].decode()
-                magnet += f"&dn={quote(name)}"
-                
-            log.info(f"成功转换磁力链接: {magnet}")
-            return magnet
+            # 发送请求 - 修改为正确的URL路径
+            response = self._make_request(
+                'POST',
+                '/device/btinfo',  # 修改这里的URL路径
+                params={'device_space': ''},
+                data=m,
+                headers={
+                    'Content-Type': m.content_type,
+                    'pan-auth': self._pan_auth
+                }
+            )
+            
+            if response and response.get('error') == 'ok' and response.get('url'):
+                magnet_link = response.get('url')
+                log.info(f"转换成功: {magnet_link}")
+                return magnet_link
+            
+            log.error(f"转换失败: {response}")
+            return None
             
         except Exception as e:
-            log.error(f"种子转磁力链接失败: {str(e)}")
+            log.error(f"转换种子文件异常: {str(e)}")
             ExceptionUtils.exception_traceback(e)
-            return None 
+            return None
 
     def _get_folder_id(self, folder_path=None):
         """
@@ -993,7 +1029,7 @@ class Thunder(_IDownloadClient):
                 log.info(f"正在查找第 {index} 级目录: {folder_part}")
                 log.info(f"当前父目录ID: {current_parent_id or '根目录'}")
                 
-                # 获取当前层级的目录列表
+                # 获取当前级的目录列表
                 result = self._make_request(
                     'GET',
                     "/drive/v1/files",
@@ -1016,7 +1052,6 @@ class Thunder(_IDownloadClient):
                 # 在当前层级查找文件夹
                 if result.get('kind') == 'drive#fileList':
                     files = result.get('files', [])
-                    log.info(f"当前层级发现 {len(files)} 个目录, 目录列表: {files}")
                     
                     # 记录当前层级的所有目录名称和ID
                     folder_info = {
@@ -1026,7 +1061,7 @@ class Thunder(_IDownloadClient):
                     }
                     log.debug(f"当前层级目录列表: {list(folder_info.keys())}")
                     
-                    # 查找匹配的目录ID
+                    # 查找匹配目录ID
                     current_folder_id = folder_info.get(folder_part)
                     if current_folder_id:
                         log.info(f"✓ 找到目录: {folder_part}")
@@ -1040,7 +1075,7 @@ class Thunder(_IDownloadClient):
                     log.warning(f"  查找路径: {' -> '.join(folder_parts[:index])}")
                     return None
                 
-                # 更新父目录ID为当前目录ID
+                # 更新父目录ID当前目录ID
                 current_parent_id = current_folder_id
             
             # 更新缓存
