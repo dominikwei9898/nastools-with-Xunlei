@@ -810,6 +810,56 @@ class ModuleConf(object):
                     "placeholder": "127.0.0.1:7890"
                 }
             }
+        },
+        "thunder": {
+            "name": "迅雷",
+            "img_url": "../static/img/downloader/thunder.png",
+            "color": "#0066FF",  # 卡片背景色
+            "monitor_enable": True, # 是否支持监控
+            "config": {
+                "host": {
+                    "id": "thunder_host",
+                    "required": True,
+                    "title": "地址",
+                    "tooltip": "配置IP地址或域名",
+                    "type": "text",
+                    "placeholder": "127.0.0.1",
+                    "default": "192.168.1.21"
+                },
+                "port": {
+                    "id": "thunder_port",
+                    "required": True,
+                    "title": "端口",
+                    "type": "text",
+                    "placeholder": "2345",
+                    "default": "2345"
+                },
+                "username": {
+                    "id": "thunder_username",
+                    "required": True,
+                    "title": "用户名",
+                    "type": "text",
+                    "placeholder": "admin",
+                    "default": "licheng"
+                },
+                "password": {
+                    "id": "thunder_password",
+                    "required": True,
+                    "title": "密码",
+                    "type": "password",
+                    "placeholder": "password",
+                    "default": "996633"
+                },
+                # 可以添加更多配置项
+                "download_dir": {
+                    "id": "thunder_download_dir",
+                    "required": False,
+                    "title": "下载目录",
+                    "type": "text", 
+                    "placeholder": "默认下载目录",
+                    "default": "downloads"
+                }
+            }
         }
     }
 

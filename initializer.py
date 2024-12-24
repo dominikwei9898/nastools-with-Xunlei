@@ -209,6 +209,26 @@ def update_config():
                                         download_dir=downloaddir)
             _config.pop("transmission")
             overwrite_cofig = True
+        thunder = Config().get_config('thunder')
+        if thunder:
+            enabled = 1 if pt_client == "thunder" else 0
+            transfer = 1 if pt_monitor else 0
+            only_nastool = 1 if pt_monitor_only else 0
+            config = json.dumps({
+                "host": thunder.get("thunderhost"),
+                "port": thunder.get("thunderport"),
+                "username": thunder.get("thunderusername"),
+                "password": thunder.get("thunderpassword")
+            })
+            _dbhelper.update_downloader(did=None,
+                                        name="Thunder",
+                                        dtype="thunder",
+                                        enabled=enabled,
+                                        transfer=transfer,
+                                        only_nastool=only_nastool,
+                                        rmt_mode=rmt_mode,
+                                        config=config,
+                                        download_dir=downloaddir)
         # pt
         if pt_client is not None:
             pt.pop("pt_client")

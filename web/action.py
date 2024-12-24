@@ -3793,12 +3793,12 @@ class WebAction:
         """
         查询正在下载的任务
         """
-        dl_id = data.get("id")
+        dl_id = data.get("id") or Downloader().default_downloader_id
         force_list = data.get("force_list")
         MediaHander = Media()
         DownloaderHandler = Downloader()
         torrents = DownloaderHandler.get_downloading_progress(downloader_id=dl_id, force_list=bool(force_list))
-        
+    
         for torrent in torrents:
             # 先查询下载记录，没有再识别
             name = torrent.get("name")

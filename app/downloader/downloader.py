@@ -476,6 +476,13 @@ class Downloader:
                                              cookie=site_info.get("cookie"))
                 if ret:
                     download_id = downloader.get_torrent_id_by_tag(torrent_tag)
+            elif downloader_type == DownloaderType.THUNDER:
+                ret = downloader.add_torrent(content,download_dir=download_dir)
+                log.info(f"添加迅雷下载任务, 返回: {ret}")
+                if ret:
+                    # 迅雷下载器的返回值就是 download_id
+                    download_id = ret
+                    # 不需要额外的 change_torrent 操作
             else:
                 # 其它下载器，添加下载后需返回下载ID或添加状态
                 ret = downloader.add_torrent(content,
