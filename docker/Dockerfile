@@ -12,7 +12,7 @@ RUN apk add --no-cache --virtual .build-deps \
     && chmod +x /usr/bin/mc \
     && pip install --upgrade pip setuptools wheel \
     && pip install cython \
-    && pip install -r https://raw.githubusercontent.com/hsuyelin/nas-tools/master/requirements.txt \
+    && pip install -r https://raw.githubusercontent.com/Dominique9898/nastools-with-Xunlei/refs/heads/master/requirements.txt \
     && apk del --purge .build-deps \
     && rm -rf /tmp/* /root/.cache /var/cache/apk/*
 ENV S6_SERVICES_GRACETIME=30000 \
@@ -29,7 +29,7 @@ ENV S6_SERVICES_GRACETIME=30000 \
     NASTOOL_CN_UPDATE=true \
     NASTOOL_VERSION=master \
     PS1="\u@\h:\w \$ " \
-    REPO_URL="https://github.com/hsuyelin/nas-tools.git" \
+    REPO_URL="https://github.com/Dominique9898/nastools-with-Xunlei.git" \
     PYPI_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple" \
     ALPINE_MIRROR="mirrors.ustc.edu.cn" \
     PUID=0 \

@@ -895,7 +895,6 @@ class Thunder(_IDownloadClient):
             if not result or not result.get("tasks"):
                 return []
             
-            log.info(f"获取任务列表: {result.get('tasks')}")
             for task in result.get("tasks", []):
                 # 获取任务参数
                 params = task.get("params", {})
@@ -910,9 +909,6 @@ class Thunder(_IDownloadClient):
                         continue
                 except json.JSONDecodeError:
                     pass  # spec 解析失败时继续处理
-                
-                # 添加日志记录任务ID和状态
-                log.info(f"TaskID: {task.get('id')} 任务状态: {phase}")
                 
                 # 计算进度和大小
                 file_size = int(task.get("file_size", 0))
