@@ -120,3 +120,5 @@ websockets==11.0.3
 Werkzeug==2.3.7
 wsproto==1.2.0
 zhconv==1.4.3
+requests-toolbelt==1.0.0
+bencodepy==0.9.5
