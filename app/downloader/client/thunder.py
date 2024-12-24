@@ -435,13 +435,9 @@ class Thunder(_IDownloadClient):
                         task_phase = result['task'].get('phase')
                         log.info("-" * 50)
                         log.info("下载任务创建成功!")
-                        log.info(f"任务名称: {task_name}")
                         log.info(f"任务ID: {task_id}")
                         log.info(f"任务状态: {task_phase}")
-                        log.info(f"选中文件: {sub_file_index or '全部'}")
-                        log.info(f"目录ID: {parent_folder_id}")
-                        log.info("-" * 50)
-                        return task_id  # 直接返回任务ID
+                        return task_id  # 返回任务ID
                     
                     retry_count += 1
                     log.warning(f"创建任务失败,第{retry_count}次重试...")
@@ -531,15 +527,14 @@ class Thunder(_IDownloadClient):
             if not self._get_auth() or not ids:
                 return False
             
-            if not self._device_id:
-                self._device_id = self.get_device_id()
-            
             if isinstance(ids, str):
                 ids = [ids]
             
-            log.info(f"删除任务ID: {ids}")
-            
-            # 使用PATCH方法删除任务
+            # 添加更详细的日志
+            log.info(f"准备删除任务:")
+            log.info(f"传入的任务ID: {ids}")
+
+            # 执行删除操作
             delete_result = self._make_request(
                 'POST',
                 "/method/patch/drive/v1/task",
@@ -554,12 +549,23 @@ class Thunder(_IDownloadClient):
                 }
             )
             
-            if not delete_result or delete_result.get('error_code', 0) != 0:
-                log.error(f"删除任务失败: {delete_result}")
+            log.debug(f"删除请求结果: {delete_result}")
+            if not delete_result:
+                log.error("删除请求失败")
                 return False
             
-            log.info(f"成功删除任务: {ids}")
-            return True  # 修改返回值为 True
+            # 任务不存在也视为删除成功
+            if delete_result.get('error_code', 0) == 5:  # task_not_found
+                log.warning(f"任务已经不存在: {ids[0]}")
+                return True
+            
+            # 检查删除是否成功
+            if delete_result.get('error_code', 0) == 0:
+                log.info(f"成功删除任务: {ids}")
+                return True
+            
+            log.error(f"删除任务失败: {delete_result}")
+            return False
             
         except Exception as e:
             log.error(f"删除任务异常: {str(e)}")
@@ -568,9 +574,9 @@ class Thunder(_IDownloadClient):
 
     def start_torrents(self, ids):
         """
-        开始下载
+        开始/重新开始下载
         :param ids: 种子ID列表
-        :return: bool
+        :return: dict
         """
         try:
             if not self._get_auth() or not ids:
@@ -582,9 +588,70 @@ class Thunder(_IDownloadClient):
             if isinstance(ids, str):
                 ids = [ids]
             
-            log.info(f"开始任务ID: {ids}")
+            log.info(f"开始/重新开始任务ID: {ids}")
             
-            # 使用PATCH方法启动任务
+            # 获取当前任务状态
+            params = {
+                "device_space": "",
+                "space": self._device_id,
+                "limit": "100",
+                "page_token": "",
+                "filters": json.dumps({
+                    "phase": {
+                        "in": "PHASE_TYPE_ERROR,PHASE_TYPE_PAUSED"  # 同时获取错误和暂停状态的任务
+                    },
+                    "type": {
+                        "in": "user#download-url,user#download"
+                    }
+                })
+            }
+            
+            result = self._make_request(
+                'GET',
+                "/drive/v1/tasks",
+                params=params
+            )
+            
+            if not result or not result.get("tasks"):
+                return []
+            
+            current_phase = None
+            for task in result.get("tasks", []):
+                if ids[0] in task.get("id"):
+                    current_phase = task.get("status")
+                    log.info(f"任务ID: {task.get('id')} 任务状态: {current_phase}")
+                    break
+            
+            # 根据不同状态采取不同的处理策略
+            if current_phase == "PHASE_TYPE_ERROR":
+                log.info("检测到失败任务，执行重新下载流程...")
+                # 对于失败的任务，需要先重置状态为pending
+                reset_result = self._make_request(
+                    'POST',
+                    "/method/patch/drive/v1/task",
+                    params={"device_space": "", "pan-auth": self._pan_auth},
+                    json={
+                        "space": self._device_id,
+                        "type": "user#download-url",
+                        "id": ids[0],
+                        "set_params": {
+                            "spec": "{\"phase\":\"pending\"}"
+                        }
+                    }
+                )
+                
+                if not reset_result or reset_result.get('error_code', 0) != 0:
+                    log.error("重置失败任务状态失败")
+                    return False
+                    
+                log.info("失败任务重置状态成功，准备重新启动...")
+                
+            elif current_phase == "PHASE_TYPE_PAUSED":
+                log.info("检测到暂停任务，直接执行启动...")
+            else:
+                log.info("任务状态正常，执行启动...")
+            
+            # 启动/重启任务
             result = self._make_request(
                 'POST',
                 "/method/patch/drive/v1/task",
@@ -592,18 +659,22 @@ class Thunder(_IDownloadClient):
                 json={
                     "space": self._device_id,
                     "type": "user#download-url",
-                    "id": ids[0],  # 使用第一个ID
+                    "id": ids[0],
                     "set_params": {
-                        "spec": "{\"phase\":\"running\"}"  # 设置运行状态
+                        "spec": "{\"phase\":\"running\"}"
                     }
                 }
             )
             
             if result and result.get('error_code', 0) == 0:
-                log.info(f"成功启动任务: {ids}")
-                return {"id": ids[0]}  # 返回字典格式
+                status_desc = {
+                    "PHASE_TYPE_ERROR": "重新启动",
+                    "PHASE_TYPE_PAUSED": "恢复",
+                }.get(current_phase, "启动")
+                log.info(f"成功{status_desc}任务: {ids}")
+                return {"id": ids[0]}
             
-            log.error(f"启动任务失败: {result}")
+            log.error(f"任务启动失败: {result}")
             return False
             
         except Exception as e:
@@ -824,35 +895,57 @@ class Thunder(_IDownloadClient):
             if not result or not result.get("tasks"):
                 return []
             
+            log.info(f"获取任务列表: {result.get('tasks')}")
             for task in result.get("tasks", []):
                 # 获取任务参数
                 params = task.get("params", {})
                 phase = task.get("phase")
                 
+                # 检查是否为已标记删除的任务
+                spec = params.get("spec", "{}")
+                try:
+                    spec_dict = json.loads(spec)
+                    if spec_dict.get("phase") == "delete":
+                        log.info(f"跳过已标记删除的任务: {task.get('id')}")
+                        continue
+                except json.JSONDecodeError:
+                    pass  # spec 解析失败时继续处理
+                
+                # 添加日志记录任务ID和状态
+                log.info(f"TaskID: {task.get('id')} 任务状态: {phase}")
+                
                 # 计算进度和大小
                 file_size = int(task.get("file_size", 0))
-                progress = float(task.get("progress", 0)) * 100
-                downloaded = int(params.get("checked_size", 0))
+                checked_size = int(params.get("checked_size", 0))
+                
+                # 计算进度百分比
+                if file_size > 0:
+                    progress = round((checked_size / file_size) * 100, 1)
+                else:
+                    progress = 0
                 
                 # 根据状态设置速度和显示文本
-                speed = 0
+                speed = "0.0B/s"
+                dlspeed = "0.0B/s"
+                
                 if phase == "PHASE_TYPE_RUNNING":
-                    # 获取原始速度值(bytes/s)
-                    raw_speed = int(task.get("speed", 0))
-                    # 转换为可读的速度字符串(如 1.2 MB/s)
-                    speed_str = StringUtils.str_filesize(raw_speed) + "/s"
-                    # 设置速度相关字段
-                    speed = speed_str
-                    dlspeed = speed_str  # 下载速度
+                    # 从 params 中获取速度值
+                    raw_speed = params.get("speed")
+                    if raw_speed:
+                        try:
+                            raw_speed = int(raw_speed)
+                            speed_str = StringUtils.str_filesize(raw_speed) + "/s"
+                            speed = speed_str
+                            dlspeed = speed_str
+                            log.debug(f"下载速度 - 原始值: {raw_speed} bytes/s, 显示值: {speed_str}")
+                        except (ValueError, TypeError) as e:
+                            log.error(f"速度值转换失败: {raw_speed}, error: {str(e)}")
                 elif phase == "PHASE_TYPE_PAUSED":
                     speed = "已暂停"
                     dlspeed = "已暂停"
                 elif phase == "PHASE_TYPE_ERROR":
                     speed = "下载失败"
                     dlspeed = "下载失败"
-                else:
-                    speed = "0.0B/s"
-                    dlspeed = "0.0B/s"
                 
                 # 构造显示信息
                 task_info = {
@@ -860,31 +953,31 @@ class Thunder(_IDownloadClient):
                     "title": task.get("file_name"),          
                     "name": task.get("file_name"),           
                     "size": file_size,                       
-                    "progress": round(progress, 1),          
+                    "progress": progress,  # 使用计算出的进度
                     "state": self._get_status(phase),                          
-                    "speed": speed,  # 显示速度
-                    "dlspeed": dlspeed,  # 下载速度
-                    "upspeed": "0.0B/s",  # 迅雷不支持上传速度显示
-                    "downloaded": downloaded,
-                    "status": phase,                         
+                    "speed": speed,
+                    "dlspeed": dlspeed,
+                    "upspeed": "0.0B/s",
+                    "downloaded": checked_size,  # 已下载大小
+                    "status": phase,
                     "save_path": params.get("real_path", ""),
-                    "noprogress": phase in ["PHASE_TYPE_ERROR", "PHASE_TYPE_PAUSED"],  # 错误或暂停状态不显示进度条
+                    "noprogress": phase in ["PHASE_TYPE_ERROR", "PHASE_TYPE_PAUSED"],
                     "nomenu": False,
-                    # 新增字段
-                    "created_time": task.get("created_time"),  # 创建时间
-                    "updated_time": task.get("updated_time"),  # 更新时间
-                    "error": params.get("error", ""),          # 详细错误信息
-                    "retry_times": params.get("retry_times", "0"), # 重试次数
-                    "speedup_status": params.get("speedup_status"), # 加速状态
-                    "speedup": params.get("speedup", "{}"),    # 加速详情
-                    "url": params.get("url", ""),              # 下载链接
-                    "total_file_count": params.get("total_file_count", "0"), # 文件总数
-                    "client_info": {                           # 客户端信息
+                    "created_time": task.get("created_time"),
+                    "updated_time": task.get("updated_time"),
+                    "error": params.get("error", ""),
+                    "retry_times": params.get("retry_times", "0"),
+                    "speedup_status": params.get("speedup_status"),
+                    "speedup": params.get("speedup", "{}"),
+                    "url": params.get("url", ""),
+                    "total_file_count": params.get("total_file_count", "0"),
+                    "client_info": {
                         "version": params.get("client_version"),
                         "platform": params.get("platform"),
                         "device_model": params.get("device_model")
                     }
                 }
+                
                 ret_array.append(task_info)
                 
             return ret_array
