@@ -824,7 +824,6 @@ class ModuleConf(object):
                     "tooltip": "配置IP地址或域名",
                     "type": "text",
                     "placeholder": "127.0.0.1",
-                    "default": "192.168.1.21"
                 },
                 "port": {
                     "id": "thunder_port",
@@ -840,7 +839,6 @@ class ModuleConf(object):
                     "title": "用户名",
                     "type": "text",
                     "placeholder": "admin",
-                    "default": "licheng"
                 },
                 "password": {
                     "id": "thunder_password",
@@ -848,7 +846,6 @@ class ModuleConf(object):
                     "title": "密码",
                     "type": "password",
                     "placeholder": "password",
-                    "default": "996633"
                 },
                 # 可以添加更多配置项
                 "download_dir": {
