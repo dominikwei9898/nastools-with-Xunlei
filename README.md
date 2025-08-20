@@ -4,4 +4,4 @@
 [Docker迅雷](https://github.com/cnk3x/xunlei)
 
 ## Docker安装该版本
-`docker pull dominique9898/nas-tools`
+`docker pull dominique9898/nastools`
